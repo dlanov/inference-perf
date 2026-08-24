@@ -19,7 +19,13 @@ from typing import Generator, List, Optional
 
 import numpy as np
 
-from inference_perf.apis import CompletionAPIData, InferenceAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import (
+    ChatCompletionAPIData,
+    ChatMessage,
+    CompletionAPIData,
+    InferenceAPIData,
+    LazyLoadInferenceAPIData,
+)
 from inference_perf.config import APIConfig, APIType, DataConfig
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
 from inference_perf.utils.numeric.distribution import generate_distribution
@@ -93,7 +99,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
         self._last_progress_log_time: Optional[float] = None
 
     def get_supported_apis(self) -> List[APIType]:
-        return [APIType.Completion]
+        return [APIType.Completion, APIType.Chat]
 
     def is_io_distribution_supported(self) -> bool:
         return True
@@ -161,6 +167,14 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
                 prompt=prompt_text,
                 max_tokens=self.output_lengths[n],
             )
+        elif self.api_config.type == APIType.Chat:
+            length = self.input_lengths[n]
+            prompt_text = self._generate_exact_length_text(length)
+            self._log_progress()
+            return ChatCompletionAPIData(
+                messages=[ChatMessage(role="user", content=prompt_text)],
+                max_tokens=self.output_lengths[n],
+            )
         else:
             raise Exception("Unsupported API type")
 
@@ -178,7 +192,7 @@ class SyntheticDataGenerator(DataGenerator, LazyLoadDataMixin):
     def get_data(self) -> Generator[InferenceAPIData, None, None]:
         if self.tokenizer is None:
             raise ValueError("Tokenizer is required for SyntheticDataGenerator")
-        if self.api_config.type != APIType.Completion:
+        if self.api_config.type not in (APIType.Completion, APIType.Chat):
             raise Exception("Unsupported API type")
 
         i = 0

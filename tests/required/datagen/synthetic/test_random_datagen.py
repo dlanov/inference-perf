@@ -1,7 +1,20 @@
+# Copyright 2026 The Kubernetes Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import numpy as np
 import pytest
 
-from inference_perf.apis import CompletionAPIData, LazyLoadInferenceAPIData
+from inference_perf.apis import ChatCompletionAPIData, CompletionAPIData, LazyLoadInferenceAPIData
 from inference_perf.config import APIConfig, APIType, DataConfig, Distribution, DataGenType, DistributionType
 from inference_perf.datagen.synthetic.random_datagen import RandomDataGenerator
 from inference_perf.utils.custom_tokenizer import CustomTokenizer
@@ -217,3 +230,52 @@ def test_random_datagen_distribution_types() -> None:
     assert len(generator.output_lengths) == 5
     for length in generator.output_lengths:
         assert length == 7
+
+
+def test_random_datagen_chat_yields_chat_completion_data() -> None:
+    """APIType.Chat must produce ChatCompletionAPIData with a single user message,
+    preserving the generator's exact input-length and max_tokens semantics."""
+    api_config = APIConfig(type=APIType.Chat, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    tokenizer = DummyCustomTokenizer()
+
+    generator = RandomDataGenerator(api_config, data_config, tokenizer)
+
+    # RandomDataGenerator uses LazyLoadDataMixin, so get_data() yields LazyLoadInferenceAPIData
+    data_gen = generator.get_data()
+    lazy_data = next(data_gen)
+    assert isinstance(lazy_data, LazyLoadInferenceAPIData)
+
+    for i in range(5):
+        real_data = generator.load_lazy_data(LazyLoadInferenceAPIData(data_index=i))
+        assert isinstance(real_data, ChatCompletionAPIData)
+
+        assert len(real_data.messages) == 1
+        message = real_data.messages[0]
+        assert message.role == "user"
+        assert isinstance(message.content, str)
+        assert len(message.content) > 0
+
+        # The generated message content carries the same exact-length semantics
+        # as the Completion path's prompt.
+        assert tokenizer.count_tokens(message.content) == generator.input_lengths[i]
+        assert real_data.max_tokens == generator.output_lengths[i]
+
+
+def test_random_datagen_use_chat_template_rejects_chat_api() -> None:
+    """use_chat_template targets the completions path; combining it with api.type: chat
+    would double-apply the chat template (the chat endpoint already templates messages
+    server-side), so construction must fail loudly instead of silently ignoring the flag."""
+    api_config = APIConfig(type=APIType.Chat, streaming=True)
+    data_config = DataConfig(
+        type=DataGenType.Random,
+        use_chat_template=True,
+        input_distribution=Distribution(min=10, max=20, mean=15, std_dev=2, total_count=5),
+        output_distribution=Distribution(min=5, max=10, mean=7, std_dev=1, total_count=5),
+    )
+    with pytest.raises(ValueError, match="cannot be combined with api.type: chat"):
+        RandomDataGenerator(api_config, data_config, ChatTemplateDummyCustomTokenizer())
